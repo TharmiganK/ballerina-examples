@@ -1,4 +1,4 @@
 [container.image]
 repository="ktharmi176"
 name="interceptor-service"
-tag="v1.0.0"
+tag="latest"
