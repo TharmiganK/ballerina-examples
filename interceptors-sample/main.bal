@@ -1,22 +1,23 @@
 import ballerina/http;
+import ballerina/http.httpscerr;
 
 isolated table<User> key(id) users = table [
     {id: 1, name: "John Doe", email: "john.doe@gmail.com"},
     {id: 2, name: "Jane Doe", email: "jane.doe@gmail.com"}
 ];
 
-listener http:Listener serverEP = new (9090,
-    interceptors = [
-        new DefaultResponseErrorInterceptor(),
-        new DefaultResponseInterceptor(),
-        new DefaultRequestInterceptor()
-    ]
-);
+listener http:Listener serverEP = new (9090);
 
-@http:ServiceConfig {
-    interceptors: [new ServiceRequestInterceptor()]
-}
-service /users on serverEP {
+service http:InterceptableService /users on serverEP {
+
+    public function createInterceptors() returns http:Interceptor|http:Interceptor[] {
+        return [
+            new DefaultResponseErrorInterceptor(),
+            new DefaultResponseInterceptor(),
+            new DefaultRequestInterceptor(),
+            new ServiceRequestInterceptor()
+        ];
+    }
 
     isolated resource function get .() returns User[] {
         lock {
@@ -24,13 +25,13 @@ service /users on serverEP {
         }
     }
 
-    isolated resource function get [int id]() returns User|http:NotFoundError {
+    isolated resource function get [int id]() returns User|httpscerr:NotFoundError {
         lock {
             if users.hasKey(id) {
                 return users.cloneReadOnly().get(id);
             }
         }
-        return error http:NotFoundError("User not found", body = {
+        return error httpscerr:NotFoundError("User not found", body = {
             "message": string `User with id ${id} not found`,
             "timestamp": getCurrentTimeStamp()
         });

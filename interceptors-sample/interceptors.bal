@@ -1,4 +1,5 @@
 import ballerina/http;
+import ballerina/http.httpscerr;
 import ballerina/mime;
 
 service class DefaultResponseInterceptor {
@@ -16,7 +17,7 @@ service class DefaultRequestInterceptor {
     isolated resource function 'default [string... path](http:RequestContext ctx,
             @http:Header string? API\-Version) returns http:NextService|error? {
         if API\-Version is string && API\-Version != "v1.0.0" {
-            return error http:NotImplementedError("API version is not supported",
+            return error httpscerr:NotImplementedError("API version is not supported",
                 body = {
                 "message": string `API version ${API\-Version} is not supported`,
                 "timestamp": getCurrentTimeStamp()
@@ -31,13 +32,12 @@ service class DefaultResponseErrorInterceptor {
     *http:ResponseErrorInterceptor;
 
     remote function interceptResponseError(error err) returns error {
-        return error http:DefaultStatusCodeError("Default error", err, body = {
+        return error httpscerr:DefaultStatusCodeError("Default error", err, body = {
             message: err.message(),
             timestamp: "2021-01-01T00:00:00.000Z"
         });
     }
 }
-
 
 service class ServiceRequestInterceptor {
     *http:RequestInterceptor;
@@ -45,7 +45,7 @@ service class ServiceRequestInterceptor {
     resource function 'default [string... path](http:RequestContext ctx,
             http:Request req) returns http:NextService|error? {
         if req.hasHeader("Content-Type") && req.getContentType() != mime:APPLICATION_JSON {
-            return error http:UnsupportedMediaTypeError("Content-Type is not supported",
+            return error httpscerr:UnsupportedMediaTypeError("Content-Type is not supported",
                 body = {
                 "message": "Only application/json is supported",
                 "timestamp": getCurrentTimeStamp()

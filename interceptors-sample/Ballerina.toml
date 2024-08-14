@@ -2,7 +2,7 @@
 org = "ktharmi176"
 name = "interceptors_sample"
 version = "0.1.0"
-distribution = "2201.5.0"
+distribution = "2201.10.0"
 
 [build-options]
 cloud = "docker"
