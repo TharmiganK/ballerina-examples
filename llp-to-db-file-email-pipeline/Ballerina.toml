@@ -10,7 +10,7 @@ observabilityIncluded = true
 [[dependency]]
 org = "ballerina"
 name = "messaging"
-version = "0.1.0"
+version = "1.0.0"
 repository = "local"
 
 [[dependency]]
