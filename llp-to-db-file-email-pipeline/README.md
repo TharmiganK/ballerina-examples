@@ -1,2 +1,0 @@
-# Ballerina Pipeline Example
-

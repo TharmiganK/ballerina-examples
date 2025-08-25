@@ -1,0 +1,8 @@
+[package]
+org = "tharmigan"
+name = "healthcare_data_pipeline"
+version = "0.1.0"
+distribution = "2201.12.7"
+
+[build-options]
+observabilityIncluded = true

@@ -49,27 +49,6 @@ isolated function writeReportToFile(pipeline:MessageContext ctx) returns error? 
 }
 
 @pipeline:DestinationConfig {
-    id: "sendReportByEmail",
-    retryConfig: {
-        maxRetries: 3,
-        retryInterval: 5
-    }
-}
-isolated function sendReportByEmail(pipeline:MessageContext ctx) returns error? {
-    Report report = check ctx.getContentWithType();
-    string currentTimestamp = time:utcToEmailString(time:utcNow());
-    string subject = string `[${currentTimestamp}] New Patient Report for patient id: ${report.patient.pid}`;
-    string bodyInHtml = createObservationHtmlReport(report.patient, report.observation);
-    _ = check gmailClient->/users/me/messages/send.post(
-        {
-            to: [adminEmail],
-            subject,
-            bodyInHtml
-        }
-    );
-}
-
-@pipeline:DestinationConfig {
     id: "insertPatientToDatabase"
 }
 isolated function insertPatientToDatabase(pipeline:MessageContext ctx) returns error? {

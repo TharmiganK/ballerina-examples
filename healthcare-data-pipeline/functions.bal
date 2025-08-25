@@ -1,5 +1,7 @@
 import ballerinax/health.hl7v28;
 
+import xlibb/pipeline;
+
 isolated function transformToPatient(hl7v28:ORU_R01 oruR01) returns Patient {
     Patient patient = {};
     patient.servicingfacility = oruR01.msh.msh6.hd1;
@@ -73,60 +75,43 @@ string `# Patient Report
 | ${observation.name} | ${observation.'type} | ${observation.value} | ${observation.units} | ${observation.referencerange} | ${observation.status} | ${observation.timeofobservation} |
 `;
 
-isolated function createObservationHtmlReport(Patient patient, Observation observation) returns string =>
-string `<!DOCTYPE html>
+isolated function createFailureHtmlReport(pipeline:Message failedMsg) returns string {
+    map<pipeline:ErrorInfo>? destinationErrors = failedMsg.destinationErrors;
+    string destinationsErrors = "";
+    if destinationErrors is map<pipeline:ErrorInfo> {
+        foreach [string, pipeline:ErrorInfo] [destination, errInfo] in destinationErrors.entries() {
+            destinationsErrors += string `<li><strong>Destination:</strong>${destination},<strong>Error:</strong>${errInfo.message}</li>`;
+        }
+    }
+
+    string report = string `<!DOCTYPE html>
 <html>
 <head>
-    <title>Patient Report</title>
+    <title>Failed Message Report</title>
     <style>
         body { font-family: Arial, sans-serif; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #ddd; padding: 8px; }
         th { background-color: #f2f2f2; }
+        .info-box { background-color: #e7f3ff; border: 1px solid #b3d9ff; padding: 10px; margin: 10px 0; border-radius: 4px; }
     </style>
 </head>
 <body>
-    <h1>Patient Report</h1>
-    <h2>Patient Details</h2>
+    <h1>Failed Message Report</h1>
+    <div class="info-box">
+        <strong>Note:</strong> Inspect the failed message in the failure store admin console and replay the message to debug failures.
+    </div>
+    <h2>Message Details</h2>
     <ul>
-        <li><strong>ID:</strong> ${patient.pid}</li>
-        <li><strong>Name:</strong> ${patient.firstname} ${patient.lastname}</li>
-        <li><strong>Gender:</strong> ${patient.gender}</li>
-        <li><strong>Address:</strong> ${patient.address}, ${patient.city}, ${patient.state}, ${patient.zip}</li>
-        <li><strong>SSN:</strong> ${patient.ssn}</li>
-        <li><strong>Phone:</strong> ${patient.phone}</li>
-        <li><strong>Birthdate:</strong> ${patient.birthdate}</li>
-        <li><strong>Attending Doctor:</strong> ${patient.attendingdoctor}</li>
-        <li><strong>Admission Type:</strong> ${patient.admissiontype}</li>
-        <li><strong>Admission Source:</strong> ${patient.admitsource}</li>
-        <li><strong>Hospital Service:</strong> ${patient.hospitalservice}</li>
-        <li><strong>Referring Doctor:</strong> ${patient.referringdoctor}</li>
+        <li><strong>ID:</strong> ${failedMsg.id}</li>
+        <li><strong>Error message:</strong> ${failedMsg.errorMsg ?: ""}</li>
     </ul>
-    <h2>Observation Details</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Value</th>
-                <th>Units</th>
-                <th>Reference Range</th>
-                <th>Status</th>
-                <th>Time of Observation</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td>${observation.name}</td>
-                <td>${observation.'type}</td>
-                <td>${observation.value}</td>
-                <td>${observation.units}</td>
-                <td>${observation.referencerange}</td>
-                <td>${observation.status}</td>
-                <td>${observation.timeofobservation}</td>
-            </tr>
-        </tbody>
-    </table>
+    <h2>Destination Errors</h2>
+    <ul>
+        ${destinationsErrors}
+    </ul>
 </body>
 </html>
 `;
+    return report;
+}
