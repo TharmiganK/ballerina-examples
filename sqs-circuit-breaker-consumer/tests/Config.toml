@@ -1,0 +1,5 @@
+# Placeholder values so the module-level clients can start during `bal test`. The tests make no network calls.
+awsRegion = "us-east-1"
+queueUrl = "https://sqs.us-east-1.amazonaws.com/000000000000/test-queue"
+dlqUrl = "https://sqs.us-east-1.amazonaws.com/000000000000/test-dlq"
+downstreamUrl = "http://localhost:9090"
