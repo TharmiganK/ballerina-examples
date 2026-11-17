@@ -28,17 +28,17 @@ isolated function recordFailures(PollingCircuitBreaker breaker, int count) {
 
 @test:Config
 function rateRuleWaitsForRequestVolume() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = rateOnlyConfig);
+    PollingCircuitBreaker breaker = new (name = "test", config = rateOnlyConfig);
     recordFailures(breaker, count = 3);
     test:assertEquals(actual = breaker.currentState(), expected = CLOSED, msg = "3 results is below the volume of 4");
     breaker.recordTransientFailure();
     test:assertEquals(actual = breaker.currentState(), expected = OPEN);
-    test:assertEquals(actual = breaker.acquirePermit().maxMessages, expected = 0, msg = "no polling while open");
+    test:assertEquals(actual = breaker.acquirePermit().mode, expected = WAIT, msg = "no polling while open");
 }
 
 @test:Config
 function rateMustExceedThreshold() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = rateOnlyConfig);
+    PollingCircuitBreaker breaker = new (name = "test", config = rateOnlyConfig);
     breaker.recordSuccess();
     breaker.recordSuccess();
     recordFailures(breaker, count = 2);
@@ -49,7 +49,7 @@ function rateMustExceedThreshold() {
 
 @test:Config
 function oldFailuresLeaveTheWindow() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = rateOnlyConfig);
+    PollingCircuitBreaker breaker = new (name = "test", config = rateOnlyConfig);
     recordFailures(breaker, count = 3);
     runtime:sleep(2.6);
     breaker.recordTransientFailure();
@@ -58,7 +58,7 @@ function oldFailuresLeaveTheWindow() {
 
 @test:Config
 function consecutiveRuleOpensOnQuietQueue() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = consecutiveOnlyConfig);
+    PollingCircuitBreaker breaker = new (name = "test", config = consecutiveOnlyConfig);
     // Each failure arrives after the previous one has left the 2 s window, as on a quiet queue.
     foreach int attempt in 1 ... 3 {
         if attempt > 1 {
@@ -71,7 +71,7 @@ function consecutiveRuleOpensOnQuietQueue() {
 
 @test:Config
 function successResetsConsecutiveCount() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = consecutiveOnlyConfig);
+    PollingCircuitBreaker breaker = new (name = "test", config = consecutiveOnlyConfig);
     recordFailures(breaker, count = 2);
     breaker.recordSuccess();
     recordFailures(breaker, count = 2);
@@ -82,7 +82,7 @@ function successResetsConsecutiveCount() {
 
 @test:Config
 function consecutiveRuleCanBeTurnedOff() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = {
+    PollingCircuitBreaker breaker = new (name = "test", config = {
         rollingWindow: {requestVolumeThreshold: 100},
         consecutiveFailureThreshold: ()
     });
@@ -92,47 +92,50 @@ function consecutiveRuleCanBeTurnedOff() {
 
 @test:Config
 function halfOpenTrialFailsThenSucceeds() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = consecutiveOnlyConfig);
+    PollingCircuitBreaker breaker = new (name = "test", config = consecutiveOnlyConfig);
     recordFailures(breaker, count = 3);
     test:assertEquals(actual = breaker.currentState(), expected = OPEN);
 
     runtime:sleep(1.1);
-    test:assertEquals(actual = breaker.acquirePermit().maxMessages, expected = 1, msg = "one trial message");
+    test:assertEquals(actual = breaker.acquirePermit().mode, expected = TRIAL, msg = "one trial message");
     test:assertEquals(actual = breaker.currentState(), expected = HALF_OPEN);
     breaker.recordTransientFailure();
     test:assertEquals(actual = breaker.currentState(), expected = OPEN, msg = "a failed trial reopens the circuit");
 
     runtime:sleep(1.1);
-    test:assertEquals(actual = breaker.acquirePermit().maxMessages, expected = 1);
+    test:assertEquals(actual = breaker.acquirePermit().mode, expected = TRIAL);
     breaker.recordSuccess();
     test:assertEquals(actual = breaker.currentState(), expected = CLOSED);
-    test:assertEquals(actual = breaker.acquirePermit().maxMessages, expected = 10, msg = "full batches again");
+    test:assertEquals(actual = breaker.acquirePermit().mode, expected = FULL_BATCH, msg = "full batches again");
 
     recordFailures(breaker, count = 2);
     test:assertEquals(actual = breaker.currentState(), expected = CLOSED, msg = "counts were cleared on close");
 }
 
-// The consumer relies on this: after the open period, the state stays OPEN with 0 s remaining until the next poll.
+// The consumer relies on this: once the open period ends, the next message of a batch is processed as the trial.
 @test:Config
-function staysOpenUntilNextPermit() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = consecutiveOnlyConfig);
+function stateBecomesHalfOpenWithoutAPoll() {
+    PollingCircuitBreaker breaker = new (name = "test", config = consecutiveOnlyConfig);
     recordFailures(breaker, count = 3);
+    test:assertTrue(breaker.remainingOpenSeconds() > 0);
     runtime:sleep(1.1);
+    test:assertEquals(actual = breaker.currentState(), expected = HALF_OPEN);
     test:assertEquals(actual = breaker.remainingOpenSeconds(), expected = 0);
-    test:assertEquals(actual = breaker.currentState(), expected = OPEN);
+    breaker.recordSuccess();
+    test:assertEquals(actual = breaker.currentState(), expected = CLOSED, msg = "the next result decides");
 }
 
 @test:Config
 function halfOpenSpacesOutTrials() {
-    PollingCircuitBreaker breaker = new (name = "test", maxBatchSize = 10, config = {
+    PollingCircuitBreaker breaker = new (name = "test", config = {
         consecutiveFailureThreshold: 1,
         resetTime: 0.5,
         halfOpenTrialInterval: 1
     });
     breaker.recordTransientFailure();
     runtime:sleep(0.6);
-    test:assertEquals(actual = breaker.acquirePermit().maxMessages, expected = 1);
+    test:assertEquals(actual = breaker.acquirePermit().mode, expected = TRIAL);
     PollPermit nextPermit = breaker.acquirePermit();
-    test:assertEquals(actual = nextPermit.maxMessages, expected = 0, msg = "the next trial must wait");
+    test:assertEquals(actual = nextPermit.mode, expected = WAIT, msg = "the next trial must wait");
     test:assertTrue(nextPermit.waitSeconds > 0d);
 }

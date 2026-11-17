@@ -23,7 +23,6 @@ type Bucket record {|
 # - `consecutiveFailureThreshold` failures happen in a row.
 public isolated class PollingCircuitBreaker {
     private final string name;
-    private final int maxBatchSize;
     private final BreakerConfig & readonly config;
     private final int bucketCount;
     private final decimal startTime;
@@ -34,9 +33,8 @@ public isolated class PollingCircuitBreaker {
     private decimal openUntil = 0;
     private decimal nextTrialAt = 0;
 
-    public isolated function init(string name, int maxBatchSize, BreakerConfig config) {
+    public isolated function init(string name, BreakerConfig config) {
         self.name = name;
-        self.maxBatchSize = maxBatchSize;
         self.config = config.cloneReadOnly();
         RollingWindowConfig window = config.rollingWindow;
         self.bucketCount = int:max(1, <int>(window.timeWindow / window.bucketSize).ceiling());
@@ -46,26 +44,22 @@ public isolated class PollingCircuitBreaker {
 
     # Called by the consumer before every poll.
     #
-    # + return - How many messages the consumer may receive now, or how long to wait
+    # + return - Whether the consumer may poll a full batch or one trial message, or how long to wait
     public isolated function acquirePermit() returns PollPermit {
         lock {
+            self.refreshState();
             decimal now = time:monotonicNow();
             if self.state == OPEN {
-                if now < self.openUntil {
-                    return {maxMessages: 0, waitSeconds: self.openUntil - now};
-                }
-                // The breaker keeps its own timer, so it moves on even though nothing is being polled.
-                self.transitionTo(HALF_OPEN);
-                self.nextTrialAt = now;
+                return {mode: WAIT, waitSeconds: self.openUntil - now};
             }
             if self.state == HALF_OPEN {
                 if now < self.nextTrialAt {
-                    return {maxMessages: 0, waitSeconds: self.nextTrialAt - now};
+                    return {mode: WAIT, waitSeconds: self.nextTrialAt - now};
                 }
                 self.nextTrialAt = now + self.config.halfOpenTrialInterval;
-                return {maxMessages: 1, waitSeconds: 0};
+                return {mode: TRIAL};
             }
-            return {maxMessages: self.maxBatchSize, waitSeconds: 0};
+            return {mode: FULL_BATCH};
         }
     }
 
@@ -110,8 +104,10 @@ public isolated class PollingCircuitBreaker {
         }
     }
 
+    # + return - The current state. An open circuit whose open period has ended is reported as `HALF_OPEN`
     public isolated function currentState() returns CircuitState {
         lock {
+            self.refreshState();
             return self.state;
         }
     }
@@ -119,11 +115,24 @@ public isolated class PollingCircuitBreaker {
     # + return - Seconds left until the circuit stops being open, rounded up; `0` when it is not open
     public isolated function remainingOpenSeconds() returns int {
         lock {
+            self.refreshState();
             if self.state != OPEN {
                 return 0;
             }
             decimal remaining = self.openUntil - time:monotonicNow();
             return remaining <= 0d ? 0 : <int>remaining.ceiling();
+        }
+    }
+
+    # Moves an open circuit to half-open once its open period has ended. Every read of the state calls this, so the
+    # breaker moves on without a timer thread and even though nothing is being polled.
+    private isolated function refreshState() {
+        lock {
+            decimal now = time:monotonicNow();
+            if self.state == OPEN && now >= self.openUntil {
+                self.transitionTo(HALF_OPEN);
+                self.nextTrialAt = now;
+            }
         }
     }
 

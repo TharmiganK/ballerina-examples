@@ -21,7 +21,7 @@ final http:Client downstreamClient = check new (downstreamUrl, timeout = 10);
 
 public function main() returns error? {
     check validateConfig(consumerConfig, breakerConfig);
-    PollingCircuitBreaker breaker = new (DOWNSTREAM_SYSTEM, consumerConfig.maxBatchSize, breakerConfig);
+    PollingCircuitBreaker breaker = new (DOWNSTREAM_SYSTEM, breakerConfig);
     QueueConsumer consumer = new (sqsClient, queueUrl, dlqUrl, breaker, consumerConfig);
     consumer.run();
 }

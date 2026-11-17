@@ -59,13 +59,23 @@ public enum CircuitState {
     HALF_OPEN
 }
 
+# How the consumer may poll next.
+public enum PollMode {
+    # Poll a full batch
+    FULL_BATCH,
+    # Poll one trial message
+    TRIAL,
+    # Do not poll; wait `waitSeconds` and ask again
+    WAIT
+}
+
 # The circuit breaker's answer to "may the consumer poll now?".
 #
-# + maxMessages - Messages the consumer may receive; `0` means do not poll
-# + waitSeconds - How long to wait before asking again when `maxMessages` is `0`
+# + mode - Whether to poll a full batch, one trial message, or nothing
+# + waitSeconds - How long to wait before asking again when `mode` is `WAIT`
 public type PollPermit record {|
-    int maxMessages;
-    decimal waitSeconds;
+    PollMode mode;
+    decimal waitSeconds = 0;
 |};
 
 # Details attached to every processing error.

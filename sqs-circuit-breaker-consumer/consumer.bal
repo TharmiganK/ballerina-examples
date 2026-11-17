@@ -32,12 +32,12 @@ public isolated class QueueConsumer {
         while self.isRunning() {
             // Ask the circuit breaker first. While it is open, nothing is received.
             PollPermit permit = self.breaker.acquirePermit();
-            if permit.maxMessages == 0 {
+            if permit.mode == WAIT {
                 runtime:sleep(permit.waitSeconds);
                 continue;
             }
             sqs:Message[]|sqs:Error messages = self.sqsClient->receiveMessage(self.queueUrl,
-                    maxNumberOfMessages = permit.maxMessages,
+                    maxNumberOfMessages = permit.mode == FULL_BATCH ? self.config.maxBatchSize : 1,
                     waitTimeSeconds = self.config.waitTimeSeconds,
                     visibilityTimeout = self.config.visibilityTimeoutSeconds,
                     messageAttributeNames = ["All"],
@@ -71,9 +71,9 @@ public isolated class QueueConsumer {
         map<boolean> blockedGroups = {};
         foreach sqs:Message message in messages {
             if self.breaker.currentState() == OPEN {
-                // The circuit opened during this batch: return the rest unprocessed until it may close. The state
-                // stays OPEN past `openUntil` until the next poll, so wait at least 1 s for the half-open trial.
-                self.returnToQueue(message, delaySeconds = int:max(self.breaker.remainingOpenSeconds(), 1));
+                // The circuit opened during this batch: return the rest unprocessed until it may close. If the open
+                // period ends mid-batch, the next message is processed as the half-open trial.
+                self.returnToQueue(message, delaySeconds = self.breaker.remainingOpenSeconds());
                 continue;
             }
             string? groupId = groupIdOf(message);
@@ -242,18 +242,19 @@ isolated function retryDelaySeconds(ConsumerConfig config, int receiveCount) ret
 # still reach the DLQ.
 #
 # + body - The message body
-# + attributes - The DLQ attributes; modified in place
+# + attributes - The DLQ attributes; left unchanged
 # + maxBytes - The DLQ's maximum message size
-# + return - The attributes that fit
+# + return - A copy of the attributes that fit
 isolated function fitToSize(string body, map<sqs:MessageAttributeValue> attributes, int maxBytes)
         returns map<sqs:MessageAttributeValue> {
+    map<sqs:MessageAttributeValue> fitted = attributes.clone();
     foreach string optional in [ERROR_MESSAGE_ATTRIBUTE, SOURCE_QUEUE_ATTRIBUTE] {
-        if messageSizeBytes(body, attributes) <= maxBytes {
+        if messageSizeBytes(body, fitted) <= maxBytes {
             break;
         }
-        _ = attributes.removeIfHasKey(optional);
+        _ = fitted.removeIfHasKey(optional);
     }
-    return attributes;
+    return fitted;
 }
 
 isolated function messageSizeBytes(string body, map<sqs:MessageAttributeValue> attributes) returns int {
