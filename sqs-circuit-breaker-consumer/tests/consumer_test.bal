@@ -68,3 +68,28 @@ function createString(int length) returns string {
         select "x";
     return string:'join("", ...chars);
 }
+
+@test:Config
+function processingErrorsKeepTheirClassification() {
+    PermanentError permanent = error("bad payload", code = "INVALID_PAYLOAD", correlationId = "c", affectedSystem = "consumer");
+    test:assertTrue(asProcessingError(permanent, "c") is PermanentError);
+}
+
+@test:Config
+function unexpectedErrorsBecomeTransient() {
+    error? panicked = trap panicInProcessing();
+    if panicked is () {
+        test:assertFail("expected the panic to be trapped");
+    }
+    ProcessingError failure = asProcessingError(panicked, "c1");
+    if failure !is TransientError {
+        test:assertFail("a panic must be retried, not sent to the DLQ");
+    }
+    test:assertEquals(actual = failure.detail().code, expected = "UNEXPECTED_ERROR");
+    test:assertEquals(actual = failure.detail().correlationId, expected = "c1");
+}
+
+function panicInProcessing() returns error? {
+    int[] empty = [];
+    _ = empty[1];
+}

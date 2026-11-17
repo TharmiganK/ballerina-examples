@@ -69,18 +69,21 @@ flowchart TB
 
 ### 1. Error classification
 
-`processMessage` returns `()` on success, or one of two error types. The circuit breaker counts only transient errors, because a broken message says nothing about the downstream system's health.
+`processMessage` returns `()` on success, or one of two error types. The circuit breaker counts transient errors as failures. A rejected request counts as a success, because the downstream system answered. An invalid message is not counted, because it says nothing about the downstream system's health.
 
 | Failure | Example | Type | Retried | Counted by the circuit breaker |
 |---|---|---|---|---|
 | Invalid message | Not JSON, missing field, empty body, `orderId` with characters other than letters, digits, `_` and `-` | Permanent | No, to the DLQ | No |
-| Request rejected | HTTP 400, 404, 409, 422 | Permanent | No, to the DLQ | No |
+| Request rejected | HTTP 400, 404, 409, 422 | Permanent | No, to the DLQ | As a success: the downstream system is up |
 | Overloaded or slow | HTTP 408, 429 | Transient | Yes | Yes |
 | Server error | HTTP 5xx | Transient | Yes | Yes |
 | Network | Timeout, connection refused, DNS | Transient | Yes | Yes |
 | Not authorised | HTTP 401, 403 | Transient | Yes | Yes |
 | Redirect | HTTP 3xx (redirects are not followed) | Transient | Yes | Yes |
 | Duplicate | Already processed (idempotency key) | Success | Deleted | Counts as success |
+| Unexpected error | A panic in the processing code | Transient (`UNEXPECTED_ERROR`) | Yes | Yes |
+
+A panic does not stop the consumer. It is retried like a transient error, so a bug that affects every message opens the circuit and keeps the messages in the queue until the fix is deployed, instead of sending them all to the DLQ.
 
 `OrderEvent` is an open record, so fields that producers add later are accepted, and forwarded to the downstream system, instead of failing every message. `orderId` is checked before it is used in the request path, because the HTTP client does not percent-encode path segments.
 
@@ -113,6 +116,7 @@ flowchart TD
 
 - **Retry delay:** `retryBaseDelaySeconds`, multiplied by `retryBackOffFactor` on every further attempt (with the defaults: 10 s, 20 s, 40 s, ...), up to `retryMaxDelaySeconds`. The attempt number comes from the message's `ApproximateReceiveCount`.
 - **Out of retries:** after `maxAttempts` receives, a message that keeps failing goes to the DLQ, but **only while the circuit is closed**. During an outage every message fails, which says nothing about the message itself, so it waits in the queue instead. `maxAttempts` is a receive budget, not a count of processing attempts: half-open trials and messages returned unprocessed use it up too. After an outage, a message can therefore reach the DLQ after fewer real attempts, possibly one. See [Making the numbers fit together](#making-the-numbers-fit-together).
+- **A message that keeps failing on its own looks like an outage.** On a quiet queue, or a FIFO queue with one active group, a message that keeps getting a transient error opens the circuit itself after `consecutiveFailureThreshold` failures. From then on it fails while the circuit is not closed, so the consumer keeps retrying it as the half-open trial, and the queue's redrive policy moves it to the DLQ once `maxReceiveCount` is reached, without the error attributes. The consumer cannot tell this message apart from a downstream outage, so it errs on the side of keeping it.
 - **Nothing is lost:** a message is deleted from the source queue only after it has been sent to the DLQ successfully.
 
 ### 3. Circuit breaker states
@@ -152,7 +156,7 @@ stateDiagram-v2
 |---|---|
 | `CLOSED` | Normal: up to `maxBatchSize` messages per receive |
 | `OPEN` | None for `resetTime` seconds. Messages stay in SQS and their receive count does not grow |
-| `HALF_OPEN` | One trial message at a time, at most one every `halfOpenTrialInterval` seconds |
+| `HALF_OPEN` | One trial message at a time, at most one every `halfOpenTrialInterval` seconds. The first trial is sent as soon as the open period ends. An invalid message decides nothing, so while half-open such messages go to the DLQ at the trial rate until a valid one arrives |
 
 The circuit opens when **either** rule is met:
 
@@ -334,7 +338,7 @@ The sample makes these assumptions. Check each one against your system and chang
 
 1. **One downstream system per consumer.** One circuit breaker protects one downstream system. If one queue holds messages for several systems, an outage in one system pauses the messages for all of them.
 2. **The circuit breaker state is per instance.** It lives in memory. With several replicas, each one opens, waits and sends trial messages independently. Sharing the state (for example in Redis or DynamoDB) is not covered.
-3. **Messages are processed one at a time.** Each loop handles its batch in sequence. To scale, run more replicas or more loops.
+3. **One polling loop per circuit breaker, processing one message at a time.** The circuit breaker relies on this: with several loops sharing one breaker, a loop could report a result from a batch received before the state changed, and close or reopen the circuit on it. To scale, run more replicas, each with its own breaker.
 4. **The downstream system is idempotent.** Every call carries an `Idempotency-Key` header (the event ID), and the downstream system ignores a key it has already processed. SQS can deliver a message more than once, for example when a delete fails.
 5. **Retries go through SQS only.** The HTTP client has no retry configuration. If you add HTTP retries, include their total time in the visibility timeout calculation below.
 6. **Half-open trials use real messages.** There is no separate health-check call. A trial message uses up one receive.
@@ -386,7 +390,7 @@ check sqsClient->setQueueAttributes(queueUrl, {
 | `waitTimeSeconds` | 20 | Keep at 20 (long polling) to avoid paying for empty receives |
 | `visibilityTimeoutSeconds` | 150 | Greater than `maxBatchSize` × the worst-case time for one message. Every message's timer starts when the batch is received, and messages are processed one after another |
 | `maxAttempts` | 5 | How many receives a failing message gets while the downstream system is healthy. Receives that were not processing attempts count too (see below) |
-| `retryBaseDelaySeconds` / `retryBackOffFactor` / `retryMaxDelaySeconds` | 10 / 2 / 900 | Delay before attempt *n* is base × factor^(n−1), capped at the maximum. The defaults give 10, 20, 40 and 80 s, about 2.5 minutes before a message goes to the DLQ. A factor of 3 gives 10, 30, 90, 270 s (about 7 minutes); 1 gives a fixed 10 s. Keep the maximum well under 12 hours, the SQS limit |
+| `retryBaseDelaySeconds` / `retryBackOffFactor` / `retryMaxDelaySeconds` | 10 / 2 / 900 | Delay before attempt *n* is base × factor^(n−1), capped at the maximum. The defaults give 10, 20, 40 and 80 s, about 2.5 minutes before a message goes to the DLQ while the circuit stays closed. If its failures open the circuit, it takes longer (see "Out of retries" above). A factor of 3 gives 10, 30, 90, 270 s (about 7 minutes); 1 gives a fixed 10 s. Keep the maximum well under 12 hours, the SQS limit |
 | `receiveErrorBackoffSeconds` | 5 | Pause after SQS itself fails a receive |
 | `maxMessageSizeBytes` | 1048576 | The DLQ's `MaximumMessageSize` (1,024 to 1,048,576). Used to drop optional DLQ attributes when a large message would not fit |
 
@@ -407,7 +411,7 @@ check sqsClient->setQueueAttributes(queueUrl, {
 1. **Visibility timeout vs. processing time.** With a 10 s HTTP timeout and batches of 10: 10 × 10 s = 100 s, so the default of 150 s leaves a margin. If you add HTTP retries, use the worst case of all attempts and waits per message.
 2. **`maxReceiveCount` vs. `maxAttempts`.** Receives that do not count as attempts still raise the receive count: half-open trials, messages returned when the circuit opens during a batch, and messages held back behind their FIFO group. Allow headroom for these:
    - **Standard queues:** trials are spread across many messages, so `maxAttempts` + 10 to 15 is usually enough.
-   - **FIFO queues with few groups:** the same message at the front of its group may be the trial message every time. During an outage it is received about once every `resetTime` + `halfOpenTrialInterval` seconds (about 2 times a minute with the defaults). Size `maxReceiveCount` for your longest expected outage, up to the maximum of 1,000, or raise `resetTime`.
+   - **FIFO queues with few groups:** the same message at the front of its group may be the trial message every time. During an outage it is received about once every `resetTime` seconds (about 2 times a minute with the defaults), because the first trial is sent as soon as the open period ends and a failed trial reopens the circuit. Size `maxReceiveCount` for your longest expected outage, up to the maximum of 1,000, or raise `resetTime`.
    - **`maxAttempts` is used up the same way.** Once the circuit closes, a message whose receive count already reached `maxAttempts` during the outage goes to the DLQ on its next failure, without a backoff retry. If that matters, raise `maxAttempts`, or track real attempts in a shared store (for example DynamoDB, keyed by message ID). SQS cannot change the attributes of a message in the queue, so the count cannot be kept on the message itself.
 3. **Retention vs. outage length.** The source queue's retention must cover the longest outage plus the full retry time. With 14 days of retention, an outage of a few days is covered.
 

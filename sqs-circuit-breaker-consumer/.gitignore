@@ -1,1 +1,4 @@
 target/
+
+# Local connection settings. tests/Config.toml only holds placeholders and is tracked.
+/Config.toml

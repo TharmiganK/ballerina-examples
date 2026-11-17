@@ -89,13 +89,19 @@ public isolated class QueueConsumer {
     }
 
     private isolated function handleMessage(sqs:Message message) returns Disposition {
-        ProcessingError? failure = processMessage(message);
-        if failure is () {
+        // A panic in the processing code must not stop the consumer; it is turned into a transient error.
+        error? result = trap processMessage(message);
+        if result is () {
             self.breaker.recordSuccess();
             self.delete(message);
             return DONE;
         }
+        ProcessingError failure = asProcessingError(result, correlationIdOf(message));
         if failure is PermanentError {
+            if failure.detail().affectedSystem == DOWNSTREAM_SYSTEM {
+                // The downstream system answered, so it is up, even though it rejected this message.
+                self.breaker.recordSuccess();
+            }
             return self.moveToDlq(message, failure, reason = "PERMANENT");
         }
 
@@ -189,6 +195,21 @@ public isolated class QueueConsumer {
             log:printWarn("Failed to change message visibility", result, correlationId = correlationIdOf(message));
         }
     }
+}
+
+# Keeps a `ProcessingError` as it is, and turns any other error, such as a trapped panic, into a `TransientError`.
+# Retrying it means a bug that affects every message opens the circuit and keeps the messages in the queue until it
+# is fixed, instead of sending them all to the DLQ.
+#
+# + err - The error returned or trapped while processing a message
+# + correlationId - Correlation ID of the message
+# + return - The error classified as transient or permanent
+isolated function asProcessingError(error err, string correlationId) returns ProcessingError {
+    if err is ProcessingError {
+        return err;
+    }
+    return error TransientError("Unexpected error while processing the message", err, code = "UNEXPECTED_ERROR",
+            correlationId = correlationId, affectedSystem = "consumer");
 }
 
 isolated function receiveCountOf(sqs:Message message) returns int {
