@@ -452,6 +452,18 @@ bal run
 
 The unit tests cover the circuit breaker, payload parsing, status classification, retry backoff, DLQ attribute sizing and configuration validation. The polling loop is covered by the integration tests below.
 
+## Deployment
+
+The consumer is a long-running worker: `main` starts the polling loop, and the loop runs until the process stops. Deploy it as a service that is kept running, such as a Kubernetes Deployment, an ECS service or a systemd unit, rather than as a scheduled job.
+
+- **The circuit breaker needs to remember.** Its state lives in memory. A job started on a schedule would begin every run with the circuit closed, and would fail a few messages again to discover an ongoing outage, using up their receive counts.
+- **Waiting is cheap.** With 20 s long polling, an idle consumer makes about 3 receive calls a minute.
+- **Messages are processed within seconds,** instead of waiting for the next run.
+
+If you only need to process messages in windows, for example a nightly batch, change `run` to return when a receive comes back empty, and also when the circuit opens, so that a run does not wait out an outage.
+
+**Shutdown:** the sample does not handle SIGTERM. When the process is stopped, for example on a redeploy, the message being processed is cut off and is delivered again after its visibility timeout; the idempotency key makes that harmless. To stop cleanly, call `QueueConsumer.stop()` from a shutdown hook: the loop then finishes its current batch and returns.
+
 ## Integration tests
 
 `tests/integration_test.bal` runs the real `QueueConsumer` against SQS. The tests are skipped unless `SQS_IT_REGION` is set.
@@ -494,6 +506,6 @@ The sample keeps the circuit breaker minimal. Common extensions:
 - **Health-check trials:** call a health endpoint instead of using a real message, so trials use up no receives.
 - **Shared state across replicas,** so all instances open and close together.
 - **Blocking a FIFO group after a DLQ move,** when messages depend on each other. This needs a shared store of blocked groups, and a replay process that sends the fixed message first and the rest in order.
-- **Graceful shutdown:** call `QueueConsumer.stop()` on SIGTERM. Messages being processed reappear after their visibility timeout.
+- **Graceful shutdown:** call `QueueConsumer.stop()` on SIGTERM, so the current batch finishes before the process exits. See [Deployment](#deployment).
 - **Metrics:** publish the circuit state and DLQ counts instead of only logging them.
 - **Parallel processing:** process different FIFO groups, or standard-queue messages, concurrently.
