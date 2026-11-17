@@ -446,11 +446,44 @@ Then:
 
 ```bash
 bal build
-bal test   # unit tests; no AWS access needed
+bal test   # unit tests; no AWS access needed (integration tests are skipped)
 bal run
 ```
 
-The unit tests cover the circuit breaker, payload parsing, status classification, retry backoff, DLQ attribute sizing and configuration validation. The polling loop needs real queues and a downstream system to run.
+The unit tests cover the circuit breaker, payload parsing, status classification, retry backoff, DLQ attribute sizing and configuration validation. The polling loop is covered by the integration tests below.
+
+## Integration tests
+
+`tests/integration_test.bal` runs the real `QueueConsumer` against SQS. The tests are skipped unless `SQS_IT_REGION` is set.
+
+| Environment variable | Required | Meaning |
+|---|---|---|
+| `SQS_IT_REGION` | Yes | AWS region to create the test queues in, e.g. `us-east-1`. Setting it turns the tests on |
+| `SQS_IT_ENDPOINT` | No | Custom SQS endpoint, e.g. `http://localhost:4566` for LocalStack |
+
+Credentials come from the AWS default credential chain, as in the sample itself: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, an IAM role, and so on.
+
+Against AWS:
+
+```bash
+AWS_PROFILE=<profile> SQS_IT_REGION=us-east-1 bal test --groups integration
+```
+
+Against LocalStack:
+
+```bash
+docker run -d --rm --name localstack -p 4566:4566 -e SERVICES=sqs localstack/localstack:3.8.1
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test SQS_IT_REGION=us-east-1 \
+  SQS_IT_ENDPOINT=http://localhost:4566 bal test --groups integration
+```
+
+What the tests do:
+
+- **Setup:** each test creates its own standard source queue and DLQ, with a unique `sqs-cb-it-…` name and a redrive policy from the source queue to the DLQ. A mock downstream system starts on port 19090 (the `downstreamUrl` in `tests/Config.toml`), and each test sets the HTTP status it returns.
+- **Tests:** a valid message is processed and deleted; an invalid message reaches the DLQ with its error attributes; a downstream 404 reaches the DLQ and keeps the circuit closed; repeated 503s reach the DLQ after `maxAttempts`; and an outage opens the circuit without sending anything to the DLQ, then the backlog drains after recovery.
+- **Cleanup:** every consumer is stopped after each test, and every queue the run created is deleted when the group finishes, also when a test fails.
+
+The identity running the tests needs `sqs:CreateQueue`, `sqs:DeleteQueue`, `sqs:GetQueueAttributes`, `sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:DeleteMessage` and `sqs:ChangeMessageVisibility`. A full run takes a few minutes and costs a few hundred SQS requests. Port 19090 must be free.
 
 ## Extending the pattern
 
